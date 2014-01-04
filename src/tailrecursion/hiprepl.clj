@@ -78,7 +78,7 @@
         new-last-timestamp (last (sort-by timec/to-long (map #(timef/parse (timef/formatter "yyyy-MM-dd'T'HH:mm:ssZ") (:date %)) msgs)))
         msgs-valid (filter #(time/after? (timef/parse (timef/formatter "yyyy-MM-dd'T'HH:mm:ssZ") (:date %)) last-timestamp) msgs)
         clojure-reqs (filter #(.startsWith (:message %) ",") msgs-valid)
-        responses (map #(eval-handler {:body (clojure.string/replace (:message %) #"\n" " ")}) clojure-reqs)]
+        responses (map #(eval-handler {:body (clojure.string/replace (:message %) #"[\\n|\\t]" " ")}) clojure-reqs)]
     (dorun (map #(client/get (str "https://api.hipchat.com/v1/rooms/message?from=" room-nickname
                                   "&format=json&color=green&message=" (str "%3Ccode%3E" % "%3C%2Fcode%3E")
                                   "&auth_token=" auth-token "&room_id=" (first rooms))) responses))
