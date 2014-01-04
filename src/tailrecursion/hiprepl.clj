@@ -1,7 +1,12 @@
 (ns tailrecursion.hiprepl
   (:require [clojure.java.io :as io]
             [clojail.core    :refer [sandbox safe-read]]
-            [clojail.testers :refer [secure-tester]])
+            [clojail.testers :refer [secure-tester]]
+            [clojure.data.json :as json]
+            [clj-http.client :as client]
+            [clj-time.core :as time]
+            [clj-time.format :as timef]
+            [clj-time.coerce :as timec])
   (:import
    [java.io StringWriter]
    [org.jivesoftware.smack ConnectionConfiguration XMPPConnection XMPPException PacketListener]
@@ -65,10 +70,30 @@
       (catch Throwable t
         (.getMessage t)))))
 
+(defn loop-listen [auth-token rooms room-nickname last-timestamp]
+  (let [req (client/get (str "https://api.hipchat.com/v1/rooms/history?format=json&date=recent&auth_token=" auth-token "&room_id=" (first rooms)))
+        reset (int (- (java.lang.Long/parseLong ((:headers req) "x-ratelimit-reset")) (/ (java.lang.System/currentTimeMillis) 1000)))
+        remaining (java.lang.Integer/parseInt ((:headers req) "x-ratelimit-remaining"))
+        msgs (:messages (json/read-str (:body req) :key-fn keyword))
+        new-last-timestamp (last (sort-by timec/to-long (map #(timef/parse (timef/formatter "yyyy-MM-dd'T'HH:mm:ssZ") (:date %)) msgs)))
+        msgs-valid (filter #(time/after? (timef/parse (timef/formatter "yyyy-MM-dd'T'HH:mm:ssZ") (:date %)) last-timestamp) msgs)
+        clojure-reqs (filter #(.startsWith (:message %) ",") msgs-valid)
+        responses (map #(eval-handler {:body (:message %)}) clojure-reqs)]
+    (dorun (map #(client/get (str "https://api.hipchat.com/v1/rooms/message?from=" room-nickname
+                                  "&format=json&color=green&message=" (str "%3Ccode%3E" % "%3C%2Fcode%3E")
+                                  "&auth_token=" auth-token "&room_id=" (first rooms))) responses))
+    (let [ttw (max 3000 (long (/ (* reset 1000) (- remaining (count responses)))))]
+      (println "remaining: " remaining ", reset in " reset ", sleeping " ttw " ms...")
+      (java.lang.Thread/sleep ttw)
+      (future (loop-listen auth-token rooms room-nickname new-last-timestamp))
+      nil)))
+
 (defn -main
   []
-  (let [{:keys [username password rooms room-nickname]} (safe-read (slurp (io/resource "config.clj")))
-        conn (connect username password "bot")]
-    (doseq [room rooms]
-      (join conn room room-nickname eval-handler))
-    @(promise)))
+  (let [{:keys [type auth-token username password rooms room-nickname]} (safe-read (slurp (io/resource "config.clj")))]
+    (if (= type :xmpp)
+      (let [conn (connect username password "bot")]
+        (doseq [room rooms]
+          (join conn room room-nickname eval-handler))
+        @(promise))
+      (loop-listen auth-token rooms room-nickname (time/now)))))
